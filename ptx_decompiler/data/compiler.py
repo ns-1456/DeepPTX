@@ -1,10 +1,23 @@
-"""Compile CUDA source to PTX using nvcc."""
+"""Compile CUDA source to PTX using nvcc. Supports concurrent use with unique filenames."""
 
 import os
 import subprocess
 import tempfile
+import threading
+import uuid
 from pathlib import Path
 from typing import Optional, Tuple
+
+# Thread-local counter for unique filenames in concurrent compilation
+_local = threading.local()
+
+
+def _unique_name() -> str:
+    """Return a short unique name for temp files (thread-safe)."""
+    if not hasattr(_local, "counter"):
+        _local.counter = 0
+    _local.counter += 1
+    return f"{os.getpid()}_{threading.get_ident()}_{_local.counter}"
 
 
 def compile_cuda_to_ptx(
@@ -15,6 +28,7 @@ def compile_cuda_to_ptx(
 ) -> Tuple[bool, str]:
     """
     Compile CUDA source to PTX.
+    Thread/process-safe: uses unique filenames per call.
 
     Returns:
         (success, ptx_content_or_error_message)
@@ -22,8 +36,10 @@ def compile_cuda_to_ptx(
     if work_dir is None:
         work_dir = tempfile.mkdtemp(prefix="ptx_compile_")
     work_dir = Path(work_dir)
-    cu_path = work_dir / "temp.cu"
-    ptx_path = work_dir / "temp.ptx"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    tag = _unique_name()
+    cu_path = work_dir / f"{tag}.cu"
+    ptx_path = work_dir / f"{tag}.ptx"
 
     try:
         cu_path.write_text(cuda_source, encoding="utf-8")
@@ -38,7 +54,14 @@ def compile_cuda_to_ptx(
             return False, result.stderr or result.stdout or "nvcc failed"
         if not ptx_path.exists():
             return False, "PTX file was not produced"
-        return True, ptx_path.read_text(encoding="utf-8")
+        ptx_text = ptx_path.read_text(encoding="utf-8")
+        # Clean up temp files immediately to avoid disk bloat
+        try:
+            cu_path.unlink(missing_ok=True)
+            ptx_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return True, ptx_text
     except subprocess.TimeoutExpired:
         return False, "nvcc timed out"
     except FileNotFoundError:
