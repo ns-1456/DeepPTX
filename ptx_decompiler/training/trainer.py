@@ -12,6 +12,7 @@ from tqdm.auto import tqdm
 from ptx_decompiler.training.curriculum import get_max_tier_for_epoch
 from ptx_decompiler.training.metrics import exact_match_accuracy, compute_tree_edit_distance
 from ptx_decompiler.training.scheduler import get_cosine_schedule_with_warmup
+from ptx_decompiler.utils import get_device, supports_amp
 
 
 class Trainer:
@@ -39,19 +40,20 @@ class Trainer:
         self.val_loader = val_loader
         self.optimizer = optimizer
         self.scheduler = scheduler
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or get_device()
         self.pad_id_ast = pad_id_ast
         self.eos_id_ast = eos_id_ast
         self.label_smoothing = label_smoothing
         self.max_grad_norm = max_grad_norm
-        self.use_amp = use_amp
+        # AMP only works reliably on CUDA (GradScaler is CUDA-only)
+        self.use_amp = use_amp and supports_amp(self.device)
         self.curriculum_sampler = curriculum_sampler
         self.log_interval = log_interval
         self.eval_interval = eval_interval
         self.save_dir = Path(save_dir) if save_dir else None
         self.use_wandb = use_wandb
         self.criterion = nn.CrossEntropyLoss(ignore_index=pad_id_ast, label_smoothing=label_smoothing)
-        self.scaler = torch.amp.GradScaler("cuda") if use_amp else None
+        self.scaler = torch.amp.GradScaler("cuda") if self.use_amp else None
 
     def train_epoch(self, epoch: int) -> Dict[str, float]:
         self.model.train()

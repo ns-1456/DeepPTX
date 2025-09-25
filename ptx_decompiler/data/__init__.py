@@ -25,6 +25,7 @@ from ptx_decompiler.data.grammar import (
 from ptx_decompiler.data.renderer import CUDARenderer, ast_to_cuda
 from ptx_decompiler.data.compiler import compile_cuda_to_ptx, compile_cuda_to_ptx_silent
 from ptx_decompiler.data.normalizer import normalize_ptx
+from ptx_decompiler.data.ptx_emitter import PTXEmitter
 
 __all__ = [
     "ASTNode",
@@ -50,4 +51,5 @@ __all__ = [
     "compile_cuda_to_ptx",
     "compile_cuda_to_ptx_silent",
     "normalize_ptx",
+    "PTXEmitter",
 ]
