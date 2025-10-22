@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 
 from ptx_decompiler.model.encoder import PTXEncoder
 from ptx_decompiler.model.decoder import ASTDecoder
@@ -17,6 +18,7 @@ class PTXDecompilerModel(nn.Module):
     Decoder: AST tokens (shifted right) -> decoder_out + cross_attn_weights.
     CopyGenerator: logits = p_gen * P_vocab + (1-p_gen) * P_copy.
     ptx_to_ast_map: optional (ptx_vocab_size,) LongTensor; map[ptx_id] = ast_id or -1.
+    use_gradient_checkpointing: recompute encoder/decoder in backward to save memory (allows larger batch).
     """
 
     def __init__(
@@ -32,9 +34,11 @@ class PTXDecompilerModel(nn.Module):
         max_seq_len: int = 2048,
         use_copy: bool = True,
         ptx_to_ast_map: Optional[torch.Tensor] = None,
+        use_gradient_checkpointing: bool = False,
     ):
         super().__init__()
         self.use_copy = use_copy
+        self.use_gradient_checkpointing = use_gradient_checkpointing
         if ptx_to_ast_map is not None:
             self.register_buffer("ptx_to_ast_map", ptx_to_ast_map.long())
         else:
@@ -75,12 +79,22 @@ class PTXDecompilerModel(nn.Module):
         """
         if ptx_padding_mask is None:
             ptx_padding_mask = (ptx_ids == 0)
-        memory = self.encoder(ptx_ids, src_key_padding_mask=ptx_padding_mask)
-        decoder_out, cross_attn = self.decoder(
-            ast_input_ids,
-            memory,
-            memory_key_padding_mask=ptx_padding_mask,
-        )
+        if self.training and self.use_gradient_checkpointing:
+            memory = checkpoint(
+                lambda a, b: self.encoder(a, src_key_padding_mask=b),
+                ptx_ids, ptx_padding_mask, use_reentrant=False,
+            )
+            decoder_out, cross_attn = checkpoint(
+                lambda tgt, mem, mask: self.decoder(tgt, mem, memory_key_padding_mask=mask),
+                ast_input_ids, memory, ptx_padding_mask, use_reentrant=False,
+            )
+        else:
+            memory = self.encoder(ptx_ids, src_key_padding_mask=ptx_padding_mask)
+            decoder_out, cross_attn = self.decoder(
+                ast_input_ids,
+                memory,
+                memory_key_padding_mask=ptx_padding_mask,
+            )
         if self.use_copy and self.copy_generator is not None:
             cross_attn_flat = cross_attn.mean(dim=1)
             encoder_ast_ids = (
