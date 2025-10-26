@@ -89,3 +89,5 @@ extern "C" __global__ void k(float* A, float* B, float* C, float* X, float* Y, f
 ## License
 
 MIT.
+
+See `demo/` and `notebooks/` for usage.
