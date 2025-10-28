@@ -1,3 +1,3 @@
-"""Neural PTX Decompiler (DeepPTX) -- Neuro-symbolic PTX to CUDA decompilation."""
+"""DeepPTX: neuro-symbolic PTX → CUDA decompilation. Pointer-Generator + curriculum."""
 
 __version__ = "0.1.0"
