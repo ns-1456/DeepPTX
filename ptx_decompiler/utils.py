@@ -1,4 +1,4 @@
-"""Shared utilities for device detection and environment helpers."""
+"""Shared utilities: device detection (CUDA/MPS/CPU), env helpers."""
 
 import torch
 
