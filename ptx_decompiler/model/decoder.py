@@ -1,4 +1,4 @@
-"""AST Decoder with cross-attention to encoder and optional copy mechanism."""
+"""AST Decoder: cross-attention to PTX encoder, copy mechanism, RoPE."""
 
 from typing import Optional, Tuple
 
