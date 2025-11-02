@@ -1,4 +1,4 @@
-"""Training loop with curriculum, mixed precision, WandB logging, tqdm progress bars."""
+"""Training loop: curriculum, mixed precision, WandB, tqdm."""
 
 import time
 from pathlib import Path
