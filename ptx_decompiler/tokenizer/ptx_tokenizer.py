@@ -1,4 +1,4 @@
-"""Word-level PTX tokenizer. Vocabulary built from training PTX sequences."""
+"""Word-level PTX tokenizer. Vocab from training PTX; BOS/EOS/PAD/UNK."""
 
 import re
 from collections import Counter
