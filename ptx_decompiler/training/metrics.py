@@ -3,6 +3,7 @@
 from typing import List, Optional, Callable
 
 import torch
+from tqdm.auto import tqdm
 
 
 def exact_match_accuracy(
@@ -81,7 +82,7 @@ def compile_success_rate(
     if not ast_strings:
         return 0.0
     ok = 0
-    for ast in ast_strings:
+    for ast in tqdm(ast_strings, desc="Checking compilation", unit="prog", leave=False):
         try:
             cuda = render_fn(ast)
             if compile_fn(cuda):
@@ -100,7 +101,13 @@ def semantic_equivalence_rate(
     if run_fn is None or not original_cuda or not decompiled_cuda:
         return 0.0
     ok = 0
-    for o, d in zip(original_cuda, decompiled_cuda):
+    for o, d in tqdm(
+        zip(original_cuda, decompiled_cuda),
+        total=len(original_cuda),
+        desc="Semantic equivalence",
+        unit="pair",
+        leave=False,
+    ):
         try:
             if run_fn(o, d):
                 ok += 1

@@ -1,4 +1,4 @@
-"""Training loop with curriculum, mixed precision, WandB logging."""
+"""Training loop with curriculum, mixed precision, WandB logging, tqdm progress bars."""
 
 import time
 from pathlib import Path
@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from ptx_decompiler.training.curriculum import get_max_tier_for_epoch
 from ptx_decompiler.training.metrics import exact_match_accuracy, compute_tree_edit_distance
@@ -63,7 +64,16 @@ class Trainer:
         if self.curriculum_sampler is not None:
             self.curriculum_sampler.set_epoch(epoch)
 
-        for batch_idx, batch in enumerate(self.train_loader):
+        max_tier = get_max_tier_for_epoch(epoch)
+        pbar = tqdm(
+            enumerate(self.train_loader),
+            total=len(self.train_loader),
+            desc=f"Epoch {epoch} [tier<=={max_tier}]",
+            leave=True,
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}",
+        )
+
+        for batch_idx, batch in pbar:
             ptx_ids = batch["ptx_ids"].to(self.device)
             ast_input = batch["ast_input_ids"].to(self.device)
             ast_target = batch["ast_target_ids"].to(self.device)
@@ -110,24 +120,24 @@ class Trainer:
                 total_ted += ted * ptx_ids.size(0)
                 n_samples += ptx_ids.size(0)
 
-            if (batch_idx + 1) % self.log_interval == 0:
-                avg_loss = total_loss / n_batches
-                avg_em = total_em / n_samples
-                avg_ted = total_ted / n_samples
-                if self.use_wandb:
-                    try:
-                        import wandb
-                        wandb.log({
-                            "train/loss": avg_loss,
-                            "train/exact_match": avg_em,
-                            "train/tree_edit_sim": avg_ted,
-                            "step": epoch * len(self.train_loader) + batch_idx,
-                        })
-                    except Exception:
-                        pass
-                print(
-                    f"Epoch {epoch} batch {batch_idx + 1} loss={avg_loss:.4f} em={avg_em:.4f} ted_sim={avg_ted:.4f}"
-                )
+            avg_loss = total_loss / n_batches
+            avg_em = total_em / max(n_samples, 1)
+            avg_ted = total_ted / max(n_samples, 1)
+            lr = self.optimizer.param_groups[0]["lr"]
+            pbar.set_postfix(loss=f"{avg_loss:.4f}", em=f"{avg_em:.4f}", ted=f"{avg_ted:.4f}", lr=f"{lr:.2e}")
+
+            if self.use_wandb and (batch_idx + 1) % self.log_interval == 0:
+                try:
+                    import wandb
+                    wandb.log({
+                        "train/loss": avg_loss,
+                        "train/exact_match": avg_em,
+                        "train/tree_edit_sim": avg_ted,
+                        "train/lr": lr,
+                        "step": epoch * len(self.train_loader) + batch_idx,
+                    })
+                except Exception:
+                    pass
 
         avg_loss = total_loss / max(n_batches, 1)
         avg_em = total_em / max(n_samples, 1)
@@ -141,7 +151,13 @@ class Trainer:
         total_em = 0.0
         total_ted = 0.0
         n_samples = 0
-        for batch in self.val_loader:
+        pbar = tqdm(
+            self.val_loader,
+            desc="Validating",
+            leave=False,
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}",
+        )
+        for batch in pbar:
             ptx_ids = batch["ptx_ids"].to(self.device)
             ast_input = batch["ast_input_ids"].to(self.device)
             ast_target = batch["ast_target_ids"].to(self.device)
@@ -159,6 +175,12 @@ class Trainer:
             total_ted += compute_tree_edit_distance(pred, ast_target, self.pad_id_ast, self.eos_id_ast) * ptx_ids.size(0)
             n_samples += ptx_ids.size(0)
 
+            n = max(n_samples, 1)
+            pbar.set_postfix(
+                val_loss=f"{total_loss/n:.4f}",
+                val_em=f"{total_em/n:.4f}",
+            )
+
         n = max(n_samples, 1)
         return {
             "val_loss": total_loss / n,
@@ -167,15 +189,22 @@ class Trainer:
         }
 
     def train(self, num_epochs: int) -> None:
-        for epoch in range(num_epochs):
+        epoch_pbar = tqdm(range(num_epochs), desc="Training", unit="epoch")
+        best_val_em = 0.0
+        for epoch in epoch_pbar:
             t0 = time.time()
             train_metrics = self.train_epoch(epoch)
             val_metrics = self.evaluate()
             elapsed = time.time() - t0
-            print(
-                f"Epoch {epoch} done in {elapsed:.1f}s "
-                f"train_loss={train_metrics['loss']:.4f} val_em={val_metrics['val_exact_match']:.4f}"
+            best_val_em = max(best_val_em, val_metrics["val_exact_match"])
+
+            epoch_pbar.set_postfix(
+                loss=f"{train_metrics['loss']:.4f}",
+                val_em=f"{val_metrics['val_exact_match']:.4f}",
+                best=f"{best_val_em:.4f}",
+                time=f"{elapsed:.0f}s",
             )
+
             if self.use_wandb:
                 try:
                     import wandb
