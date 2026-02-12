@@ -25,10 +25,12 @@ def compile_cuda_to_ptx(
     work_dir: Optional[str] = None,
     nvcc_path: str = "nvcc",
     arch: str = "sm_75",
+    opt_level: str = "-O0",
 ) -> Tuple[bool, str]:
     """
     Compile CUDA source to PTX.
     Thread/process-safe: uses unique filenames per call.
+    Use opt_level="-O0" for fast generation, "-O3" for realistic optimized PTX.
 
     Returns:
         (success, ptx_content_or_error_message)
@@ -44,7 +46,7 @@ def compile_cuda_to_ptx(
     try:
         cu_path.write_text(cuda_source, encoding="utf-8")
         result = subprocess.run(
-            [nvcc_path, "-ptx", "-O3", f"-arch={arch}", str(cu_path), "-o", str(ptx_path)],
+            [nvcc_path, "-ptx", opt_level, f"-arch={arch}", str(cu_path), "-o", str(ptx_path)],
             capture_output=True,
             text=True,
             timeout=30,
