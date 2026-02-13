@@ -72,10 +72,14 @@ def compile_cuda_to_ptx(
         return False, str(e)
 
 
-def compile_cuda_to_ptx_silent(cuda_source: str, work_dir: Optional[str] = None) -> Optional[str]:
+def compile_cuda_to_ptx_silent(
+    cuda_source: str,
+    work_dir: Optional[str] = None,
+    opt_level: str = "-O0",
+) -> Optional[str]:
     """
     Compile CUDA to PTX; on success return PTX string, on failure return None.
     Suppresses stderr from nvcc.
     """
-    ok, out = compile_cuda_to_ptx(cuda_source, work_dir=work_dir)
+    ok, out = compile_cuda_to_ptx(cuda_source, work_dir=work_dir, opt_level=opt_level)
     return out if ok else None
