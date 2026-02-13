@@ -49,9 +49,10 @@ class CopyGenerator(nn.Module):
         valid = (enc_ids >= 0) & (enc_ids < self.vocab_size)
         enc_ids_clamped = enc_ids.clamp(0, self.vocab_size - 1).long()
         contribution = contribution * valid.to(contribution.dtype)
-        # Scatter in float32 to avoid AMP dtype mismatches with scatter_add_, then cast back
+        # Scatter in float32 to avoid AMP dtype mismatches; use explicit dtype/device
         dtype_orig = logits_vocab.dtype
-        logits_vocab = logits_vocab.float().scatter_add_(
-            2, enc_ids_clamped, contribution.float()
-        ).to(dtype_orig)
+        logits_f32 = logits_vocab.to(torch.float32)
+        contribution_f32 = contribution.to(device=logits_f32.device, dtype=torch.float32)
+        logits_f32.scatter_add_(2, enc_ids_clamped, contribution_f32)
+        logits_vocab = logits_f32.to(dtype_orig)
         return logits_vocab, p_gen
