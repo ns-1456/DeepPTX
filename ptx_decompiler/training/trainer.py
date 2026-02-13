@@ -59,6 +59,8 @@ class Trainer:
 
     def train_epoch(self, epoch: int) -> Dict[str, float]:
         self.model.train()
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
         total_loss = 0.0
         n_batches = 0
         total_em = 0.0
