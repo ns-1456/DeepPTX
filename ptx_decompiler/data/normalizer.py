@@ -64,22 +64,35 @@ def _tokenize_ptx_line(line: str) -> List[str]:
         p = p.rstrip(";")
         if "," in p:
             for i, sub in enumerate(p.split(",")):
+                sub = sub.strip()
                 if i > 0:
                     tokens.append(",")
-                tokens.append(sub.strip())
+                if sub:
+                    tokens.append(sub)
         else:
-            tokens.append(p)
+            if p:
+                tokens.append(p)
     return tokens
 
 
 def _canonicalize_registers(instructions: List[str]) -> Tuple[List[str], Dict[str, str]]:
     """
-    Rename registers to canonical %f0, %f1, ... and %r0, %r1, ... (by prefix and order).
+    Rename registers to canonical %f0, %f1, ..., %r0, %r1, ..., %rd0, %rd1, ...,
+    %p0, %p1, ... (by prefix group and order of first appearance).
     Returns (new_instruction_lines, old_to_new_map).
     """
     reg_pattern = re.compile(r"%[a-zA-Z_][a-zA-Z0-9_]*")
-    float_regs: List[str] = []
-    int_regs: List[str] = []
+
+    # Prefix groups (checked in longest-prefix-first order to avoid %r matching %rd)
+    PREFIX_GROUPS = [
+        ("%fd", "%fd"),    # double float regs
+        ("%rd", "%rd"),    # 64-bit address regs
+        ("%f",  "%f"),     # 32-bit float regs
+        ("%r",  "%r"),     # 32-bit int regs
+        ("%p",  "%p"),     # predicate regs
+    ]
+
+    groups: Dict[str, List[str]] = {prefix: [] for _, prefix in PREFIX_GROUPS}
     other_regs: List[str] = []
     seen: set = set()
 
@@ -89,24 +102,28 @@ def _canonicalize_registers(instructions: List[str]) -> Tuple[List[str], Dict[st
             if name in seen:
                 continue
             seen.add(name)
-            if name.startswith("%f"):
-                float_regs.append(name)
-            elif name.startswith("%r"):
-                int_regs.append(name)
-            else:
+            matched = False
+            for check_prefix, group_key in PREFIX_GROUPS:
+                if name.startswith(check_prefix):
+                    groups[group_key].append(name)
+                    matched = True
+                    break
+            if not matched:
                 other_regs.append(name)
 
     mapping: Dict[str, str] = {}
-    for i, r in enumerate(float_regs):
-        mapping[r] = f"%f{i}"
-    for i, r in enumerate(int_regs):
-        mapping[r] = f"%r{i}"
+    for _, prefix in PREFIX_GROUPS:
+        for i, r in enumerate(groups[prefix]):
+            mapping[r] = f"{prefix}{i}"
     for i, r in enumerate(other_regs):
         mapping[r] = f"%s{i}"
 
+    # Sort by length (longest first) to avoid partial substring replacement
+    sorted_keys = sorted(mapping.keys(), key=len, reverse=True)
+
     def replace_line(line: str) -> str:
-        for old, new in mapping.items():
-            line = line.replace(old, new)
+        for old in sorted_keys:
+            line = line.replace(old, mapping[old])
         return line
 
     new_lines = [replace_line(l) for l in instructions]

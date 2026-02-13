@@ -37,7 +37,8 @@ class DecompilationPipeline:
         self.model = model
         self.ptx_tokenizer = ptx_tokenizer
         self.ast_tokenizer = ast_tokenizer
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        from ptx_decompiler.utils import get_device
+        self.device = device or get_device()
         self.verifier = verifier or CompilationVerifier()
         self.beam_size = beam_size
         self.renderer = CUDARenderer()
