@@ -32,6 +32,7 @@ class Trainer:
         curriculum_sampler: Optional[Any] = None,
         log_interval: int = 50,
         eval_interval: int = 500,
+        val_every: int = 1,
         save_dir: Optional[Path] = None,
         use_wandb: bool = False,
     ):
@@ -50,6 +51,7 @@ class Trainer:
         self.curriculum_sampler = curriculum_sampler
         self.log_interval = log_interval
         self.eval_interval = eval_interval
+        self.val_every = val_every
         self.save_dir = Path(save_dir) if save_dir else None
         self.use_wandb = use_wandb
         self.criterion = nn.CrossEntropyLoss(ignore_index=pad_id_ast, label_smoothing=label_smoothing)
@@ -75,12 +77,13 @@ class Trainer:
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}",
         )
 
+        non_blocking = self.device.type == "cuda"
         for batch_idx, batch in pbar:
-            ptx_ids = batch["ptx_ids"].to(self.device)
-            ast_input = batch["ast_input_ids"].to(self.device)
-            ast_target = batch["ast_target_ids"].to(self.device)
+            ptx_ids = batch["ptx_ids"].to(self.device, non_blocking=non_blocking)
+            ast_input = batch["ast_input_ids"].to(self.device, non_blocking=non_blocking)
+            ast_target = batch["ast_target_ids"].to(self.device, non_blocking=non_blocking)
             ptx_mask = batch["ptx_mask"]
-            ptx_padding = (~ptx_mask).to(self.device)
+            ptx_padding = (~ptx_mask).to(self.device, non_blocking=non_blocking)
 
             self.optimizer.zero_grad(set_to_none=True)
 
@@ -153,6 +156,7 @@ class Trainer:
         total_em = 0.0
         total_ted = 0.0
         n_samples = 0
+        non_blocking = self.device.type == "cuda"
         pbar = tqdm(
             self.val_loader,
             desc="Validating",
@@ -160,13 +164,17 @@ class Trainer:
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}",
         )
         for batch in pbar:
-            ptx_ids = batch["ptx_ids"].to(self.device)
-            ast_input = batch["ast_input_ids"].to(self.device)
-            ast_target = batch["ast_target_ids"].to(self.device)
+            ptx_ids = batch["ptx_ids"].to(self.device, non_blocking=non_blocking)
+            ast_input = batch["ast_input_ids"].to(self.device, non_blocking=non_blocking)
+            ast_target = batch["ast_target_ids"].to(self.device, non_blocking=non_blocking)
             ptx_mask = batch["ptx_mask"]
-            ptx_padding = (~ptx_mask).to(self.device)
+            ptx_padding = (~ptx_mask).to(self.device, non_blocking=non_blocking)
 
-            logits, _ = self.model(ptx_ids, ast_input, ptx_padding)
+            if self.use_amp and self.device.type == "cuda":
+                with torch.amp.autocast("cuda"):
+                    logits, _ = self.model(ptx_ids, ast_input, ptx_padding)
+            else:
+                logits, _ = self.model(ptx_ids, ast_input, ptx_padding)
             loss = self.criterion(
                 logits.view(-1, logits.size(-1)),
                 ast_target.reshape(-1),
@@ -193,12 +201,17 @@ class Trainer:
     def train(self, num_epochs: int) -> None:
         epoch_pbar = tqdm(range(num_epochs), desc="Training", unit="epoch")
         best_val_em = 0.0
+        last_val_metrics = {"val_exact_match": 0.0, "val_loss": 0.0}
         for epoch in epoch_pbar:
             t0 = time.time()
             train_metrics = self.train_epoch(epoch)
-            val_metrics = self.evaluate()
+            if (epoch + 1) % self.val_every == 0:
+                val_metrics = self.evaluate()
+                last_val_metrics = val_metrics
+                best_val_em = max(best_val_em, val_metrics["val_exact_match"])
+            else:
+                val_metrics = last_val_metrics
             elapsed = time.time() - t0
-            best_val_em = max(best_val_em, val_metrics["val_exact_match"])
 
             epoch_pbar.set_postfix(
                 loss=f"{train_metrics['loss']:.4f}",
@@ -207,7 +220,7 @@ class Trainer:
                 time=f"{elapsed:.0f}s",
             )
 
-            if self.use_wandb:
+            if self.use_wandb and (epoch + 1) % self.val_every == 0:
                 try:
                     import wandb
                     wandb.log({**train_metrics, **val_metrics, "epoch": epoch})
