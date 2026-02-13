@@ -1,6 +1,6 @@
 """PTX Encoder: embedding + RoPE + 6x Pre-Norm Transformer encoder layers."""
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -8,47 +8,24 @@ import torch.nn as nn
 from ptx_decompiler.model.positional import RotaryEmbedding, apply_rotary_pos_emb
 
 
-def _rope_self_attention(
-    x: torch.Tensor,
-    cos: torch.Tensor,
-    sin: torch.Tensor,
-    n_heads: int,
-    head_dim: int,
-    key_padding_mask: Optional[torch.Tensor],
-    dropout: nn.Module,
-) -> torch.Tensor:
-    B, S, D = x.shape
-    q = k = v = x
-    q = q.view(B, S, n_heads, head_dim).transpose(1, 2)
-    k = k.view(B, S, n_heads, head_dim).transpose(1, 2)
-    v = v.view(B, S, n_heads, head_dim).transpose(1, 2)
-    q, k = apply_rotary_pos_emb(q, k, cos, sin)
-    scale = head_dim ** -0.5
-    attn = (q @ k.transpose(-2, -1)) * scale
-    if key_padding_mask is not None:
-        attn = attn.masked_fill(key_padding_mask.unsqueeze(1).unsqueeze(2) == 0, float("-inf"))
-    attn = attn.softmax(dim=-1)
-    attn = dropout(attn)
-    out = (attn @ v).transpose(1, 2).contiguous().view(B, S, D)
-    return out
-
-
 class PreNormEncoderBlock(nn.Module):
-    """Pre-Norm Transformer encoder block: LN -> Attn (RoPE) -> residual, LN -> FFN -> residual."""
+    """Pre-Norm Transformer encoder block: LN -> Self-Attn (RoPE) -> residual, LN -> FFN -> residual."""
 
-    def __init__(
-        self,
-        d_model: int,
-        n_heads: int,
-        d_ff: int,
-        dropout: float = 0.1,
-    ):
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float = 0.1):
         super().__init__()
         self.d_model = d_model
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
+
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
+
+        # Q, K, V projections for self-attention
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
+
         self.ff = nn.Sequential(
             nn.Linear(d_model, d_ff),
             nn.GELU(),
@@ -56,7 +33,7 @@ class PreNormEncoderBlock(nn.Module):
             nn.Linear(d_ff, d_model),
             nn.Dropout(dropout),
         )
-        self.dropout = nn.Dropout(dropout)
+        self.attn_drop = nn.Dropout(dropout)
 
     def forward(
         self,
@@ -65,24 +42,40 @@ class PreNormEncoderBlock(nn.Module):
         sin: torch.Tensor,
         key_padding_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        B, S, D = x.shape
         residual = x
         x_norm = self.ln1(x)
-        attn_out = _rope_self_attention(
-            x_norm,
-            cos,
-            sin,
-            self.n_heads,
-            self.head_dim,
-            key_padding_mask,
-            self.dropout,
-        )
-        x = residual + attn_out
+
+        # Project Q, K, V
+        q = self.q_proj(x_norm).view(B, S, self.n_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x_norm).view(B, S, self.n_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x_norm).view(B, S, self.n_heads, self.head_dim).transpose(1, 2)
+
+        # Apply RoPE to Q, K
+        q, k = apply_rotary_pos_emb(q, k, cos, sin)
+
+        # Scaled dot-product attention
+        scale = self.head_dim ** -0.5
+        attn = (q @ k.transpose(-2, -1)) * scale
+
+        # key_padding_mask: (B, S), True = padding position to mask out
+        if key_padding_mask is not None:
+            attn = attn.masked_fill(
+                key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf")
+            )
+
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+        out = (attn @ v).transpose(1, 2).contiguous().view(B, S, D)
+        out = self.out_proj(out)
+
+        x = residual + out
         x = x + self.ff(self.ln2(x))
         return x
 
 
 class PTXEncoder(nn.Module):
-    """Encoder for PTX sequences. Outputs memory for decoder and optional padding mask."""
+    """Encoder for PTX sequences. Outputs memory for decoder."""
 
     def __init__(
         self,
@@ -112,7 +105,7 @@ class PTXEncoder(nn.Module):
         src_ids: torch.Tensor,
         src_key_padding_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        # src_ids: (B, S_src)
+        # src_ids: (B, S_src), src_key_padding_mask: (B, S_src) True=padding
         x = self.dropout(self.embed(src_ids))
         seq_len = x.size(1)
         cos, sin = self.rope(seq_len, x.device, x.dtype)

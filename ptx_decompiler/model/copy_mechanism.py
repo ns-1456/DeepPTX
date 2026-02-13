@@ -48,6 +48,6 @@ class CopyGenerator(nn.Module):
         enc_ids = encoder_token_ids.unsqueeze(1).expand(B, T, -1)
         valid = (enc_ids >= 0) & (enc_ids < self.vocab_size)
         enc_ids_clamped = enc_ids.clamp(0, self.vocab_size - 1).long()
-        contribution = contribution * valid.float()
+        contribution = (contribution * valid.float()).to(logits_vocab.dtype)
         logits_vocab.scatter_add_(2, enc_ids_clamped, contribution)
         return logits_vocab, p_gen
