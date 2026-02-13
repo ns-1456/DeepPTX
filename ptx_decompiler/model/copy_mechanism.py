@@ -49,7 +49,9 @@ class CopyGenerator(nn.Module):
         valid = (enc_ids >= 0) & (enc_ids < self.vocab_size)
         enc_ids_clamped = enc_ids.clamp(0, self.vocab_size - 1).long()
         contribution = contribution * valid.to(contribution.dtype)
-        # Ensure same dtype as logits_vocab for scatter_add_ (required under AMP when logits are float16)
-        contribution = contribution.to(logits_vocab.dtype)
-        logits_vocab.scatter_add_(2, enc_ids_clamped, contribution)
+        # Scatter in float32 to avoid AMP dtype mismatches with scatter_add_, then cast back
+        dtype_orig = logits_vocab.dtype
+        logits_vocab = logits_vocab.float().scatter_add_(
+            2, enc_ids_clamped, contribution.float()
+        ).to(dtype_orig)
         return logits_vocab, p_gen
